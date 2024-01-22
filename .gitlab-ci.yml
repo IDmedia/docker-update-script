@@ -1,0 +1,11 @@
+stages:
+  - lint
+
+code-lint:
+  stage: lint
+  tags:
+    - linux
+  image: python:3.12-slim
+  script:
+    - pip install flake8
+    - flake8 . --exclude=venv
