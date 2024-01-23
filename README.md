@@ -107,3 +107,7 @@ Make sure to modify the path to the top-level Docker container (/mnt/user/docker
 
 
 ### Feel free to contribute, report issues, or suggest improvements! If you find this repository useful, don't forget to star it :)
+
+<a href="https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=JPGHGTWP33A5L">
+  <img src="https://raw.githubusercontent.com/stefan-niedermann/paypal-donate-button/master/paypal-donate-button.png" alt="Donate with PayPal" />
+</a>
