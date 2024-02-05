@@ -123,7 +123,7 @@ def main(args):
     for compose_file in containers_restart:
 
         # Remove containers
-        subprocess.check_call(['docker-compose', '-f', compose_file, 'down', '-t', str(args.timeout)])
+        subprocess.check_call(['docker-compose', '-f', compose_file, 'down', '--remove-orphans', '-t', str(args.timeout)])
 
         # Start containers
         subprocess.check_call(['docker-compose', '-f', compose_file, 'up', '-d'])
