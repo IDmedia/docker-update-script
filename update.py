@@ -7,6 +7,7 @@ import argparse
 import subprocess
 from collections import Counter
 
+
 def check_docker_compose_version():
     """Ensure that `docker compose` (v2) is available."""
     try:
@@ -16,10 +17,12 @@ def check_docker_compose_version():
         logger.error("Docker Compose v2 (`docker compose`) is not installed or not available.")
         sys.exit(1)
 
+
 def get_image_ids(compose_file):
     # Get the image IDs from the specified docker compose file
     output = subprocess.check_output(['docker', 'compose', '-f', compose_file, 'images', '-q']).decode().strip()
     return output.splitlines()
+
 
 def get_docker_container_state(container_id):
     try:
@@ -39,6 +42,7 @@ def get_docker_container_state(container_id):
         logger.error(f"Failed to retrieve container state from container id '{container_id}'")
         return None
 
+
 def get_docker_container_state_from_compose(yaml_path):
     try:
         # Run the docker compose ps -q command to get container IDs
@@ -55,6 +59,7 @@ def get_docker_container_state_from_compose(yaml_path):
     except subprocess.CalledProcessError:
         logger.error(f"Failed to retrieve container state from docker-compose file '{yaml_path}'")
         return None
+
 
 def get_docker_tag(image_sha):
     try:
@@ -74,6 +79,7 @@ def get_docker_tag(image_sha):
         logger.error(f"Failed to retrieve container tag from image SHA '{image_sha}'")
         return None
 
+
 def build_in_docker_compose(docker_compose_file_path):
     # Check if 'build' is present and not commented out in a Docker Compose file
     with open(docker_compose_file_path, 'r') as file:
@@ -81,6 +87,7 @@ def build_in_docker_compose(docker_compose_file_path):
     build_pattern = re.compile(r'^\s*build:', re.MULTILINE)
     comment_pattern = re.compile(r'^\s*#.*build:', re.MULTILINE)
     return len(re.findall(build_pattern, content)) > len(re.findall(comment_pattern, content))
+
 
 def authenticate_docker_registries():
     # Authenticate to Docker registries using credentials from a JSON file
@@ -102,6 +109,7 @@ def authenticate_docker_registries():
                     logger.error('An error occurred during the login process. Please check your credentials.')
                     sys.exit(1)
     return docker_registries
+
 
 def main(args):
     # Ensure `docker compose` is available
@@ -174,6 +182,7 @@ def main(args):
     subprocess.check_call(['docker', 'volume', 'prune', '-f'])
     subprocess.check_call(['docker', 'builder', 'prune', '-f'])
     subprocess.check_call(['docker', 'network', 'prune', '-f'])
+
 
 if __name__ == '__main__':
     # Define color codes
