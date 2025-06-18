@@ -7,105 +7,91 @@ import argparse
 import subprocess
 from collections import Counter
 
+def check_docker_compose_version():
+    """Ensure that `docker compose` (v2) is available."""
+    try:
+        subprocess.check_output(['docker', 'compose', 'version'], universal_newlines=True)
+        return True
+    except subprocess.CalledProcessError:
+        logger.error("Docker Compose v2 (`docker compose`) is not installed or not available.")
+        sys.exit(1)
 
 def get_image_ids(compose_file):
-    # Get the image IDs from the specified docker-compose file
-    output = subprocess.check_output(['docker-compose', '-f', compose_file, 'images', '-q']).decode().strip()
+    # Get the image IDs from the specified docker compose file
+    output = subprocess.check_output(['docker', 'compose', '-f', compose_file, 'images', '-q']).decode().strip()
     return output.splitlines()
-
 
 def get_docker_container_state(container_id):
     try:
         # Run the docker inspect command and capture the output
         output = subprocess.check_output(['docker', 'inspect', container_id], universal_newlines=True)
-
         # Parse the JSON output
         container_info = json.loads(output)
-
         # Extract the state from the output
         if container_info:
             # The state is available under the 'State' key
             state = container_info[0].get('State', {})
             if state:
                 return state
-
         # No container found with the given ID or no state available
         return None
-
     except subprocess.CalledProcessError:
         logger.error(f"Failed to retrieve container state from container id '{container_id}'")
         return None
 
-
 def get_docker_container_state_from_compose(yaml_path):
     try:
-        # Run the docker-compose ps -q command to get container IDs
-        output = subprocess.check_output(['docker-compose', '-f', yaml_path, 'ps', '-q'], universal_newlines=True)
-
+        # Run the docker compose ps -q command to get container IDs
+        output = subprocess.check_output(['docker', 'compose', '-f', yaml_path, 'ps', '-q'], universal_newlines=True)
         # Split the output into lines and remove empty lines
         container_ids = [line.strip() for line in output.splitlines() if line.strip()]
-
         container_states = []
-
         # Loop through container IDs and get their states
         for container_id in container_ids:
             container_state = get_docker_container_state(container_id)
             if container_state:
                 container_states.append(container_state)
-
         return container_states
-
     except subprocess.CalledProcessError:
         logger.error(f"Failed to retrieve container state from docker-compose file '{yaml_path}'")
         return None
-
 
 def get_docker_tag(image_sha):
     try:
         # Run the docker inspect command and capture the output
         output = subprocess.check_output(['docker', 'inspect', image_sha], universal_newlines=True)
-
         # Parse the JSON output
         image_info = json.loads(output)
-
         # Extract the tag from the output
         if image_info:
             # The tags are available under the 'RepoTags' key
             tags = image_info[0].get('RepoTags', [])
             if tags:
                 return tags[0].split(':')[1]
-
         # No image found with the given SHA or no tags available
         return None
-
     except subprocess.CalledProcessError:
         logger.error(f"Failed to retrieve container tag from image SHA '{image_sha}'")
         return None
-
 
 def build_in_docker_compose(docker_compose_file_path):
     # Check if 'build' is present and not commented out in a Docker Compose file
     with open(docker_compose_file_path, 'r') as file:
         content = file.read()
-
     build_pattern = re.compile(r'^\s*build:', re.MULTILINE)
     comment_pattern = re.compile(r'^\s*#.*build:', re.MULTILINE)
-
     return len(re.findall(build_pattern, content)) > len(re.findall(comment_pattern, content))
-
 
 def authenticate_docker_registries():
     # Authenticate to Docker registries using credentials from a JSON file
     docker_registries = []
     docker_login_json_file = os.path.join(os.path.dirname(os.path.realpath(__file__)), '.docker-update')
-
     if os.path.exists(docker_login_json_file):
         with open(docker_login_json_file, 'r') as file:
             data = json.load(file)
             for entry in data:
                 registry, credentials = entry.popitem()
                 username, password = credentials['username'], credentials['password']
-
                 try:
                     # Docker login command
                     subprocess.run(f'echo "{password}" | docker login --username "{username}" --password-stdin "{registry}"',
@@ -115,11 +101,12 @@ def authenticate_docker_registries():
                     logger.error(f'Docker login failed with exit code {e.returncode}')
                     logger.error('An error occurred during the login process. Please check your credentials.')
                     sys.exit(1)
-
     return docker_registries
 
-
 def main(args):
+    # Ensure `docker compose` is available
+    check_docker_compose_version()
+
     # Get the absolute path of the script directory
     docker_dir = os.path.dirname(os.path.realpath(__file__))
     containers = args.containers
@@ -140,31 +127,25 @@ def main(args):
 
     # Containers to restart
     containers_restart = []
-
     for container in containers:
         compose_file = os.path.join(docker_dir, container, 'docker-compose.yaml')
-
         # Process each valid docker-compose file
         if not os.path.isfile(compose_file):
             logger.warning(f"Skipping container '{container}' because docker-compose.yaml is missing")
             continue
-
         # Get current image id
         logger.info(f"Updating '{container}'")
         current_image_ids = get_image_ids(compose_file)
-
         # Build or pull the latest image
         if build_in_docker_compose(compose_file):
             logger.info(f"Initiating build of '{container}' specified by 'build' attribute in docker-compose.yaml")
-            subprocess.check_call(['docker-compose', '-f', compose_file, 'build', '--no-cache'])
+            subprocess.check_call(['docker', 'compose', '-f', compose_file, 'build', '--no-cache'])
         else:
             logger.info(f"Pulling new image for '{container}'")
-            subprocess.check_call(['docker-compose', '-f', compose_file, 'pull'])
-
+            subprocess.check_call(['docker', 'compose', '-f', compose_file, 'pull'])
         # Check the new tag the container has
         new_image_ids = get_image_ids(compose_file)
         new_image_ids = [image_id for image_id in new_image_ids if get_docker_tag(image_id) is not None]
-
         # Check if the image IDs have changed or force re-creation
         if (Counter(current_image_ids) != Counter(new_image_ids)) or args.force:
             if args.force:
@@ -177,12 +158,10 @@ def main(args):
 
     # Restart selected containers
     for compose_file in containers_restart:
-
         # Remove containers
-        subprocess.check_call(['docker-compose', '-f', compose_file, 'down', '--remove-orphans', '-t', str(args.timeout)])
-
+        subprocess.check_call(['docker', 'compose', '-f', compose_file, 'down', '--remove-orphans', '-t', str(args.timeout)])
         # Start containers
-        subprocess.check_call(['docker-compose', '-f', compose_file, 'up', '-d'])
+        subprocess.check_call(['docker', 'compose', '-f', compose_file, 'up', '-d'])
 
     # Docker logout from authenticated registries
     for registry in docker_registries:
@@ -195,7 +174,6 @@ def main(args):
     subprocess.check_call(['docker', 'volume', 'prune', '-f'])
     subprocess.check_call(['docker', 'builder', 'prune', '-f'])
     subprocess.check_call(['docker', 'network', 'prune', '-f'])
-
 
 if __name__ == '__main__':
     # Define color codes
