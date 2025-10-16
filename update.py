@@ -18,9 +18,20 @@ def check_docker_compose_version():
         sys.exit(1)
 
 
+def compose_file_flags(compose_file):
+    """Return ['-f', base, '-f', override] if override exists, otherwise ['-f', base]."""
+    flags = ['-f', compose_file]
+    override = os.path.join(os.path.dirname(compose_file), 'docker-compose.override.yaml')
+    if os.path.isfile(override):
+        flags += ['-f', override]
+    return flags
+
+
 def get_image_ids(compose_file):
-    # Get the image IDs from the specified docker compose file
-    output = subprocess.check_output(['docker', 'compose', '-f', compose_file, 'images', '-q']).decode().strip()
+    # Get the image IDs from the specified docker compose files (base + override if present)
+    output = subprocess.check_output(
+        ['docker', 'compose', *compose_file_flags(compose_file), 'images', '-q']
+    ).decode().strip()
     return output.splitlines()
 
 
@@ -45,8 +56,11 @@ def get_docker_container_state(container_id):
 
 def get_docker_container_state_from_compose(yaml_path):
     try:
-        # Run the docker compose ps -q command to get container IDs
-        output = subprocess.check_output(['docker', 'compose', '-f', yaml_path, 'ps', '-q'], universal_newlines=True)
+        # Run the docker compose ps -q command to get container IDs (base + override if present)
+        output = subprocess.check_output(
+            ['docker', 'compose', *compose_file_flags(yaml_path), 'ps', '-q'],
+            universal_newlines=True
+        )
         # Split the output into lines and remove empty lines
         container_ids = [line.strip() for line in output.splitlines() if line.strip()]
         container_states = []
@@ -81,12 +95,23 @@ def get_docker_tag(image_sha):
 
 
 def build_in_docker_compose(docker_compose_file_path):
-    # Check if 'build' is present and not commented out in a Docker Compose file
-    with open(docker_compose_file_path, 'r') as file:
-        content = file.read()
-    build_pattern = re.compile(r'^\s*build:', re.MULTILINE)
-    comment_pattern = re.compile(r'^\s*#.*build:', re.MULTILINE)
-    return len(re.findall(build_pattern, content)) > len(re.findall(comment_pattern, content))
+    """
+    Determine if any service is defined with 'build' in the merged config (base + override if present).
+    """
+    try:
+        cfg = subprocess.check_output(
+            ['docker', 'compose', *compose_file_flags(docker_compose_file_path), 'config'],
+            universal_newlines=True
+        )
+        # Simple check: presence of 'build:' in the rendered config
+        return re.search(r'^\s*build:', cfg, re.MULTILINE) is not None
+    except subprocess.CalledProcessError:
+        # Fallback: check only the base file content
+        with open(docker_compose_file_path, 'r') as file:
+            content = file.read()
+        build_pattern = re.compile(r'^\s*build:', re.MULTILINE)
+        comment_pattern = re.compile(r'^\s*#.*build:', re.MULTILINE)
+        return len(re.findall(build_pattern, content)) > len(re.findall(comment_pattern, content))
 
 
 def authenticate_docker_registries():
@@ -146,11 +171,11 @@ def main(args):
         current_image_ids = get_image_ids(compose_file)
         # Build or pull the latest image
         if build_in_docker_compose(compose_file):
-            logger.info(f"Initiating build of '{container}' specified by 'build' attribute in docker-compose.yaml")
-            subprocess.check_call(['docker', 'compose', '-f', compose_file, 'build', '--no-cache'])
+            logger.info(f"Initiating build of '{container}' specified by 'build' in compose files")
+            subprocess.check_call(['docker', 'compose', *compose_file_flags(compose_file), 'build', '--no-cache'])
         else:
             logger.info(f"Pulling new image for '{container}'")
-            subprocess.check_call(['docker', 'compose', '-f', compose_file, 'pull'])
+            subprocess.check_call(['docker', 'compose', *compose_file_flags(compose_file), 'pull'])
         # Check the new tag the container has
         new_image_ids = get_image_ids(compose_file)
         new_image_ids = [image_id for image_id in new_image_ids if get_docker_tag(image_id) is not None]
@@ -167,9 +192,12 @@ def main(args):
     # Restart selected containers
     for compose_file in containers_restart:
         # Remove containers
-        subprocess.check_call(['docker', 'compose', '-f', compose_file, 'down', '--remove-orphans', '-t', str(args.timeout)])
+        subprocess.check_call([
+            'docker', 'compose', *compose_file_flags(compose_file),
+            'down', '--remove-orphans', '-t', str(args.timeout)
+        ])
         # Start containers
-        subprocess.check_call(['docker', 'compose', '-f', compose_file, 'up', '-d'])
+        subprocess.check_call(['docker', 'compose', *compose_file_flags(compose_file), 'up', '-d'])
 
     # Docker logout from authenticated registries
     for registry in docker_registries:
