@@ -136,6 +136,28 @@ def authenticate_docker_registries():
     return docker_registries
 
 
+def restart_container(compose_file, timeout):
+    # Remove containers
+    subprocess.check_call([
+        'docker', 'compose', *compose_file_flags(compose_file),
+        'down', '--remove-orphans', '-t', str(timeout)
+    ])
+
+    # Start containers
+    subprocess.check_call(['docker', 'compose', *compose_file_flags(compose_file), 'up', '-d'])
+
+
+def prune_resources():
+    logger.info('Pruning unused Docker resources')
+    try:
+        subprocess.check_call(['docker', 'image', 'prune', '-f'])
+        subprocess.check_call(['docker', 'volume', 'prune', '-f'])
+        subprocess.check_call(['docker', 'builder', 'prune', '-f'])
+        subprocess.check_call(['docker', 'network', 'prune', '-f'])
+    except subprocess.CalledProcessError:
+        logger.warning("Failed to prune some resources.")
+
+
 def main(args):
     # Ensure `docker compose` is available
     check_docker_compose_version()
@@ -185,19 +207,18 @@ def main(args):
                 logger.warning(f"Adding '{container}' to restart list (forced)")
             else:
                 logger.warning(f"Adding '{container}' to restart list as a newer version is available")
-            containers_restart.append(compose_file)
+
+            if args.immediate:
+                restart_container(compose_file, args.timeout)
+                prune_resources()
+            else:
+                containers_restart.append(compose_file)
         else:
             logger.info(f"Image for '{container}' remains unchanged, no container restart required")
 
     # Restart selected containers
     for compose_file in containers_restart:
-        # Remove containers
-        subprocess.check_call([
-            'docker', 'compose', *compose_file_flags(compose_file),
-            'down', '--remove-orphans', '-t', str(args.timeout)
-        ])
-        # Start containers
-        subprocess.check_call(['docker', 'compose', *compose_file_flags(compose_file), 'up', '-d'])
+        restart_container(compose_file, args.timeout)
 
     # Docker logout from authenticated registries
     for registry in docker_registries:
@@ -205,11 +226,8 @@ def main(args):
         subprocess.run(f'docker logout {registry}', shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     # Docker prune unused resources
-    logger.info('Pruning unused Docker resources')
-    subprocess.check_call(['docker', 'image', 'prune', '-f'])
-    subprocess.check_call(['docker', 'volume', 'prune', '-f'])
-    subprocess.check_call(['docker', 'builder', 'prune', '-f'])
-    subprocess.check_call(['docker', 'network', 'prune', '-f'])
+    if not args.immediate:
+        prune_resources()
 
 
 if __name__ == '__main__':
@@ -245,6 +263,7 @@ if __name__ == '__main__':
     parser.add_argument('-c', '--containers', type=str, help='Specify a list of containers to update (example: "couchpotato, medusa")', required=False)
     parser.add_argument('-e', '--exclude', type=str, help='Specify a list of containers to exclude from the update (example: "sonarr, radarr")', required=False)
     parser.add_argument('-f', '--force', default=False, action='store_true', help='Force re-creating container(s)')
+    parser.add_argument('-i', '--immediate', action='store_true', help='Update, restart and prune immediately per container to save space')
     parser.add_argument('-t', '--timeout', type=int, default=60, help='Specify the timeout for stopping containers (default: 60)')
     args = parser.parse_args()
 
