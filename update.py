@@ -150,7 +150,7 @@ def restart_container(compose_file, timeout):
 def prune_resources():
     logger.info('Pruning unused Docker resources')
     try:
-        subprocess.check_all(['docker', 'system', 'prune', '-a', '-f', '--volumes'])
+        subprocess.check_call(['docker', 'system', 'prune', '-a', '-f', '--volumes'])
     except subprocess.CalledProcessError:
         logger.warning("Failed to prune some resources.")
 
