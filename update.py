@@ -29,7 +29,6 @@ def compose_file_flags(compose_file):
 
 def get_image_ids(compose_file):
     """Get the image IDs for images specified in the compose file.
-    
     This uses 'docker compose config' to get the image references, then
     inspects those images to get their actual IDs. This ensures we're checking
     the images that would be used for new containers, not the images of
@@ -40,7 +39,7 @@ def get_image_ids(compose_file):
         ['docker', 'compose', *compose_file_flags(compose_file), 'config'],
         universal_newlines=True
     )
-    
+
     # Extract image references from the config
     image_refs = []
     for line in config_output.splitlines():
@@ -48,7 +47,7 @@ def get_image_ids(compose_file):
         match = re.match(r'^\s*image:\s*(.+)$', line)
         if match:
             image_refs.append(match.group(1).strip())
-    
+
     # Get the actual image IDs by inspecting each image reference
     image_ids = []
     for image_ref in image_refs:
@@ -65,9 +64,8 @@ def get_image_ids(compose_file):
         except subprocess.CalledProcessError:
             # Image doesn't exist locally yet (might happen before first pull)
             pass
-    
-    return image_ids
 
+    return image_ids
 
 
 def get_docker_container_state(container_id):
