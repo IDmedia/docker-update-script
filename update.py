@@ -28,11 +28,46 @@ def compose_file_flags(compose_file):
 
 
 def get_image_ids(compose_file):
-    # Get the image IDs from the specified docker compose files (base + override if present)
-    output = subprocess.check_output(
-        ['docker', 'compose', *compose_file_flags(compose_file), 'images', '-q']
-    ).decode().strip()
-    return output.splitlines()
+    """Get the image IDs for images specified in the compose file.
+    
+    This uses 'docker compose config' to get the image references, then
+    inspects those images to get their actual IDs. This ensures we're checking
+    the images that would be used for new containers, not the images of
+    currently running containers.
+    """
+    # Get the rendered compose configuration
+    config_output = subprocess.check_output(
+        ['docker', 'compose', *compose_file_flags(compose_file), 'config'],
+        universal_newlines=True
+    )
+    
+    # Extract image references from the config
+    image_refs = []
+    for line in config_output.splitlines():
+        # Look for "image:" lines in the YAML output
+        match = re.match(r'^\s*image:\s*(.+)$', line)
+        if match:
+            image_refs.append(match.group(1).strip())
+    
+    # Get the actual image IDs by inspecting each image reference
+    image_ids = []
+    for image_ref in image_refs:
+        try:
+            output = subprocess.check_output(
+                ['docker', 'inspect', '--format={{.Id}}', image_ref],
+                universal_newlines=True,
+                stderr=subprocess.DEVNULL
+            ).strip()
+            # Remove 'sha256:' prefix if present
+            if output.startswith('sha256:'):
+                output = output[7:]
+            image_ids.append(output)
+        except subprocess.CalledProcessError:
+            # Image doesn't exist locally yet (might happen before first pull)
+            pass
+    
+    return image_ids
+
 
 
 def get_docker_container_state(container_id):
@@ -188,6 +223,8 @@ def main(args):
         # Get current image id
         logger.info(f"Updating '{container}'")
         current_image_ids = get_image_ids(compose_file)
+        # Filter current images to only include those with valid tags (same as new_image_ids filtering)
+        current_image_ids = [image_id for image_id in current_image_ids if get_docker_tag(image_id) is not None]
         # Build or pull the latest image
         if build_in_docker_compose(compose_file):
             logger.info(f"Initiating build of '{container}' specified by 'build' in compose files")
@@ -197,6 +234,7 @@ def main(args):
             subprocess.check_call(['docker', 'compose', *compose_file_flags(compose_file), 'pull'])
         # Check the new tag the container has
         new_image_ids = get_image_ids(compose_file)
+        # Filter new images to only include those with valid tags
         new_image_ids = [image_id for image_id in new_image_ids if get_docker_tag(image_id) is not None]
         # Check if the image IDs have changed or force re-creation
         if (Counter(current_image_ids) != Counter(new_image_ids)) or args.force:
