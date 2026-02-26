@@ -28,44 +28,33 @@ def compose_file_flags(compose_file):
 
 
 def get_image_ids(compose_file):
-    """Get the image IDs for images specified in the compose file.
-    This uses 'docker compose config' to get the image references, then
-    inspects those images to get their actual IDs. This ensures we're checking
-    the images that would be used for new containers, not the images of
-    currently running containers.
     """
-    # Get the rendered compose configuration
-    config_output = subprocess.check_output(
-        ['docker', 'compose', *compose_file_flags(compose_file), 'config'],
+    Resolve the image IDs that the compose file's image tags currently point to
+    in the local Docker store. Uses `docker compose config --images` to get the
+    declared image names, then `docker inspect` to resolve each to its current
+    local SHA. This correctly detects newly pulled images even while old
+    containers are still running on previous image versions.
+    """
+    images_output = subprocess.check_output(
+        ['docker', 'compose', *compose_file_flags(compose_file), 'config', '--images'],
         universal_newlines=True
-    )
-
-    # Extract image references from the config
-    image_refs = []
-    for line in config_output.splitlines():
-        # Look for "image:" lines in the YAML output
-        match = re.match(r'^\s*image:\s*(.+)$', line)
-        if match:
-            image_refs.append(match.group(1).strip())
-
-    # Get the actual image IDs by inspecting each image reference
-    image_ids = []
-    for image_ref in image_refs:
+    ).strip()
+    image_names = list(set(images_output.splitlines()))  # deduplicate (e.g. server+worker share same image)
+    ids = []
+    for name in image_names:
+        if not name:
+            continue
         try:
-            output = subprocess.check_output(
-                ['docker', 'inspect', '--format={{.Id}}', image_ref],
-                universal_newlines=True,
-                stderr=subprocess.DEVNULL
+            sha = subprocess.check_output(
+                ['docker', 'inspect', '--format', '{{.Id}}', name],
+                universal_newlines=True
             ).strip()
-            # Remove 'sha256:' prefix if present
-            if output.startswith('sha256:'):
-                output = output[7:]
-            image_ids.append(output)
+            if sha:
+                ids.append(sha)
         except subprocess.CalledProcessError:
-            # Image doesn't exist locally yet (might happen before first pull)
-            pass
-
-    return image_ids
+            # Image not yet pulled locally — treat as absent (empty string acts as sentinel)
+            ids.append(f'missing:{name}')
+    return ids
 
 
 def get_docker_container_state(container_id):
@@ -221,8 +210,6 @@ def main(args):
         # Get current image id
         logger.info(f"Updating '{container}'")
         current_image_ids = get_image_ids(compose_file)
-        # Filter current images to only include those with valid tags (same as new_image_ids filtering)
-        current_image_ids = [image_id for image_id in current_image_ids if get_docker_tag(image_id) is not None]
         # Build or pull the latest image
         if build_in_docker_compose(compose_file):
             logger.info(f"Initiating build of '{container}' specified by 'build' in compose files")
@@ -230,10 +217,8 @@ def main(args):
         else:
             logger.info(f"Pulling new image for '{container}'")
             subprocess.check_call(['docker', 'compose', *compose_file_flags(compose_file), 'pull'])
-        # Check the new tag the container has
+        # Resolve what image IDs the compose tags now point to after the pull
         new_image_ids = get_image_ids(compose_file)
-        # Filter new images to only include those with valid tags
-        new_image_ids = [image_id for image_id in new_image_ids if get_docker_tag(image_id) is not None]
         # Check if the image IDs have changed or force re-creation
         if (Counter(current_image_ids) != Counter(new_image_ids)) or args.force:
             if args.force:
