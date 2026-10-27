@@ -3,12 +3,13 @@ import re
 import sys
 import json
 import logging
+import configparser
 import argparse
 import subprocess
 from collections import Counter
 
-# Registry credentials, first existing file wins. '.docker-update' is the legacy name and may be YAML or JSON.
-CONFIG_FILES = ('.docker-update.yaml', '.docker-update.yml', '.docker-update')
+# Registry credentials, first existing file wins. '.docker-update' is the legacy name and may be INI or JSON.
+CONFIG_FILES = ('.docker-update.ini', '.docker-update')
 
 
 def check_docker_compose_version():
@@ -134,8 +135,8 @@ def build_in_docker_compose(docker_compose_file_path):
 
 def load_registry_credentials():
     """
-    Load registry credentials from '.docker-update.yaml', '.docker-update.yml' or '.docker-update'
-    (YAML, or the legacy JSON list format). Returns {registry: [{'username': ..., 'password': ...}, ...]}.
+    Load registry credentials from '.docker-update.ini' or '.docker-update' (INI, or the legacy JSON
+    list format). Returns {registry: [{'username': ..., 'password': ...}, ...]}.
     """
     script_dir = os.path.dirname(os.path.realpath(__file__))
     config_file = next(
@@ -147,35 +148,29 @@ def load_registry_credentials():
 
     with open(config_file, 'r') as file:
         content = file.read()
+    data = {}
     try:
-        data = json.loads(content)
+        # Legacy JSON format: [{"registry": {"username": ..., "password": ...}}, ...]
+        for entry in json.loads(content):
+            for registry, login in entry.items():
+                data.setdefault(registry, []).append(login)
     except ValueError:
+        parser = configparser.ConfigParser(interpolation=None)
         try:
-            import yaml
-        except ImportError:
-            logger.error(f"PyYAML is required to read '{config_file}'. Install it with 'pip3 install pyyaml'.")
-            sys.exit(1)
-        try:
-            data = yaml.safe_load(content)
-        except yaml.YAMLError as e:
+            parser.read_string(content, source=config_file)
+        except configparser.Error as e:
             logger.error(f"Failed to parse '{config_file}': {e}")
             sys.exit(1)
-
-    # Legacy JSON format: [{"registry": {"username": ..., "password": ...}}, ...]
-    if isinstance(data, list):
-        legacy = {}
-        for entry in data:
-            for registry, login in entry.items():
-                legacy.setdefault(registry, []).append(login)
-        data = legacy
+        for section in parser.sections():
+            # '[registry.domain.ltd]' or '[registry.domain.ltd label]', the label allows multiple logins per registry
+            registry = section.split()[0]
+            data.setdefault(registry, []).append(dict(parser[section]))
 
     credentials = {}
-    for registry, logins in (data or {}).items():
-        if isinstance(logins, dict):
-            logins = [logins]
+    for registry, logins in data.items():
         try:
-            credentials[str(registry)] = [
-                {'username': str(login['username']), 'password': str(login['password'])} for login in logins or []
+            credentials[registry] = [
+                {'username': str(login['username']), 'password': str(login['password'])} for login in logins
             ]
         except (KeyError, TypeError):
             logger.error(f"Invalid login for registry '{registry}' in '{config_file}': 'username' and 'password' are required")
