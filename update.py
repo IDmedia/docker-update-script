@@ -7,6 +7,9 @@ import argparse
 import subprocess
 from collections import Counter
 
+# Registry credentials, first existing file wins. '.docker-update' is the legacy name and may be YAML or JSON.
+CONFIG_FILES = ('.docker-update.yaml', '.docker-update.yml', '.docker-update')
+
 
 def check_docker_compose_version():
     """Ensure that `docker compose` (v2) is available."""
@@ -27,6 +30,23 @@ def compose_file_flags(compose_file):
     return flags
 
 
+def get_image_names(compose_file):
+    """Return the image names declared in the compose file(s) via `docker compose config --images`."""
+    images_output = subprocess.check_output(
+        ['docker', 'compose', *compose_file_flags(compose_file), 'config', '--images'],
+        universal_newlines=True
+    ).strip()
+    return [name for name in set(images_output.splitlines()) if name]
+
+
+def get_image_registry(image_name):
+    """Return the registry host of an image name, e.g. 'registry.domain.ltd/group/app:latest' -> 'registry.domain.ltd'."""
+    first, separator, _ = image_name.partition('/')
+    if separator and ('.' in first or ':' in first or first == 'localhost'):
+        return first
+    return 'docker.io'
+
+
 def get_image_ids(compose_file):
     """
     Resolve the image IDs that the compose file's image tags currently point to
@@ -34,15 +54,8 @@ def get_image_ids(compose_file):
     declared image names, then `docker inspect` to resolve each to its current
     local SHA.
     """
-    images_output = subprocess.check_output(
-        ['docker', 'compose', *compose_file_flags(compose_file), 'config', '--images'],
-        universal_newlines=True
-    ).strip()
-    image_names = list(set(images_output.splitlines()))
     ids = []
-    for name in image_names:
-        if not name:
-            continue
+    for name in get_image_names(compose_file):
         try:
             sha = subprocess.check_output(
                 ['docker', 'inspect', '--format', '{{.Id}}', name],
@@ -119,34 +132,130 @@ def build_in_docker_compose(docker_compose_file_path):
         return len(re.findall(build_pattern, content)) > len(re.findall(comment_pattern, content))
 
 
-def authenticate_docker_registries():
+def load_registry_credentials():
     """
-    Authenticate to Docker registries using credentials from a JSON file.
-    Returns a tuple of (successful_registries, failed_registries).
+    Load registry credentials from '.docker-update.yaml', '.docker-update.yml' or '.docker-update'
+    (YAML, or the legacy JSON list format). Returns {registry: [{'username': ..., 'password': ...}, ...]}.
     """
-    docker_registries = []
-    failed_registries = []
-    docker_login_json_file = os.path.join(os.path.dirname(os.path.realpath(__file__)), '.docker-update')
-    if os.path.exists(docker_login_json_file):
-        with open(docker_login_json_file, 'r') as file:
-            data = json.load(file)
-            for entry in data:
-                registry, credentials = entry.popitem()
-                username, password = credentials['username'], credentials['password']
-                try:
-                    subprocess.run(
-                        f'echo "{password}" | docker login --username "{username}" --password-stdin "{registry}"',
-                        shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                    )
-                    docker_registries.append(registry)
-                    logger.info(f"Successfully authenticated to registry: {registry}")
-                except subprocess.CalledProcessError as e:
-                    logger.warning(
-                        f"Docker login failed for registry '{registry}' with exit code {e.returncode}. "
-                        f"Containers using this registry will likely be skipped."
-                    )
-                    failed_registries.append(registry)
-    return docker_registries, failed_registries
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    config_file = next(
+        (path for path in (os.path.join(script_dir, name) for name in CONFIG_FILES) if os.path.isfile(path)),
+        None
+    )
+    if not config_file:
+        return {}
+
+    with open(config_file, 'r') as file:
+        content = file.read()
+    try:
+        data = json.loads(content)
+    except ValueError:
+        try:
+            import yaml
+        except ImportError:
+            logger.error(f"PyYAML is required to read '{config_file}'. Install it with 'pip3 install pyyaml'.")
+            sys.exit(1)
+        try:
+            data = yaml.safe_load(content)
+        except yaml.YAMLError as e:
+            logger.error(f"Failed to parse '{config_file}': {e}")
+            sys.exit(1)
+
+    # Legacy JSON format: [{"registry": {"username": ..., "password": ...}}, ...]
+    if isinstance(data, list):
+        legacy = {}
+        for entry in data:
+            for registry, login in entry.items():
+                legacy.setdefault(registry, []).append(login)
+        data = legacy
+
+    credentials = {}
+    for registry, logins in (data or {}).items():
+        if isinstance(logins, dict):
+            logins = [logins]
+        try:
+            credentials[str(registry)] = [
+                {'username': str(login['username']), 'password': str(login['password'])} for login in logins or []
+            ]
+        except (KeyError, TypeError):
+            logger.error(f"Invalid login for registry '{registry}' in '{config_file}': 'username' and 'password' are required")
+            sys.exit(1)
+    return credentials
+
+
+class RegistryAuth:
+    """
+    Keeps track of Docker registry logins. Docker stores only one credential per registry host,
+    so when a registry has multiple logins only one of them can be active at a time.
+    """
+
+    def __init__(self, credentials):
+        self.credentials = credentials
+        self.active = {}  # registry -> index of the currently active login
+        self.logged_in = set()  # registries to log out from when done
+
+    def login(self, registry, index):
+        logins = self.credentials[registry]
+        username, password = logins[index]['username'], logins[index]['password']
+        try:
+            subprocess.run(
+                ['docker', 'login', '--username', username, '--password-stdin', registry],
+                input=password, universal_newlines=True, check=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+        except subprocess.CalledProcessError as e:
+            logger.warning(
+                f"Docker login {index + 1}/{len(logins)} ('{username}') failed for registry '{registry}' "
+                f"with exit code {e.returncode}"
+            )
+            return False
+        self.active[registry] = index
+        self.logged_in.add(registry)
+        logger.info(f"Successfully authenticated to registry: {registry} (login {index + 1}/{len(logins)}, '{username}')")
+        return True
+
+    def login_all(self):
+        """Log in to every registry with its first working login. Returns the registries where all logins failed."""
+        failed_registries = []
+        for registry, logins in self.credentials.items():
+            if not any(self.login(registry, index) for index in range(len(logins))):
+                failed_registries.append(registry)
+        return failed_registries
+
+    def switch_logins(self, registries):
+        """Activate each alternative login for the given registries in turn, yielding (registry, index) after each switch."""
+        for registry in registries:
+            if registry not in self.active:
+                continue
+            original = self.active[registry]
+            for index in range(len(self.credentials[registry])):
+                if index != original and self.login(registry, index):
+                    yield registry, index
+
+    def logout_all(self):
+        for registry in sorted(self.logged_in):
+            logger.info(f"Logging out from Docker registry: {registry}")
+            subprocess.run(['docker', 'logout', registry], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def run_with_login_fallback(command, registries, auth):
+    """
+    Run a pull/build command. If it fails, retry it after switching to each alternative login of the
+    given registries. Raises the last CalledProcessError if every attempt fails.
+    """
+    try:
+        subprocess.check_call(command)
+        return
+    except subprocess.CalledProcessError as e:
+        last_error = e
+    for registry, index in auth.switch_logins(registries):
+        logger.info(f"Retrying with login {index + 1}/{len(auth.credentials[registry])} for registry '{registry}'")
+        try:
+            subprocess.check_call(command)
+            return
+        except subprocess.CalledProcessError as e:
+            last_error = e
+    raise last_error
 
 
 def restart_container(compose_file, timeout):
@@ -184,7 +293,8 @@ def main(args):
         containers = [container for container in containers if container not in containers_exclude]
 
     # Authenticate to Docker registries
-    docker_registries, failed_registries = authenticate_docker_registries()
+    auth = RegistryAuth(load_registry_credentials())
+    failed_registries = auth.login_all()
     if failed_registries:
         logger.warning(
             f"The following registries failed authentication and are considered unavailable: "
@@ -208,13 +318,16 @@ def main(args):
         try:
             if build_in_docker_compose(compose_file):
                 logger.info(f"Initiating build of '{container}' specified by 'build' in compose files")
-                subprocess.check_call(
-                    ['docker', 'compose', *compose_file_flags(compose_file), 'build', '--no-cache']
+                # Base images live in the Dockerfile, so any registry may be involved
+                run_with_login_fallback(
+                    ['docker', 'compose', *compose_file_flags(compose_file), 'build', '--no-cache'],
+                    auth.credentials, auth
                 )
             else:
                 logger.info(f"Pulling new image for '{container}'")
-                subprocess.check_call(
-                    ['docker', 'compose', *compose_file_flags(compose_file), 'pull']
+                run_with_login_fallback(
+                    ['docker', 'compose', *compose_file_flags(compose_file), 'pull'],
+                    {get_image_registry(name) for name in get_image_names(compose_file)}, auth
                 )
         except subprocess.CalledProcessError:
             logger.warning(
@@ -245,12 +358,7 @@ def main(args):
         restart_container(compose_file, args.timeout)
 
     # Docker logout from authenticated registries
-    for registry in docker_registries:
-        logger.info(f"Logging out from Docker registry: {registry}")
-        subprocess.run(
-            f'docker logout {registry}',
-            shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
+    auth.logout_all()
 
     # Prune unused resources
     if not args.immediate:

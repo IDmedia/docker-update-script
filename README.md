@@ -56,23 +56,26 @@ python3 docker_update_script.py -t 30
 
 
 ## Private registries authentication
-For users employing one or more private registries, support for authentication can be added by creating a JSON file named ".docker-update" containing the following content:
+For users employing one or more private registries, support for authentication can be added by creating a YAML file named ".docker-update.yaml" next to the script. Reading YAML requires PyYAML (`pip3 install pyyaml`).
+```yaml
+# Single login for a registry
+first_registry.domain.ltd:
+  username: USERNAME
+  password: PASSWORD
+
+# Multiple logins for the same registry, e.g. deploy tokens for different groups/projects
+second_registry.domain.ltd:
+  # Deploy token for the "apps" group
+  - username: USERNAME
+    password: PASSWORD
+  # Deploy token for the "tools" group
+  - username: USERNAME
+    password: PASSWORD
 ```
-[
-  {
-    "first_registry.domain.ltd": {
-      "username": "USERNAME",
-      "password": "PASSWORD"
-    }
-  },
-  {
-    "second_registry.domain.ltd": {
-      "username": "USERNAME",
-      "password": "PASSWORD"
-    }
-  }
-]
-```
+
+Docker only keeps one credential per registry, so when a registry has multiple logins the script logs in with the first one that works. If pulling (or building) a container fails, it switches to each of the other logins for the registries that container uses and tries again. A single compose file that needs images requiring two different logins from the same registry at the same time is not supported.
+
+The legacy JSON format in a file named ".docker-update" is still supported and does not require PyYAML.
 
 
 ## Alias Configuration for unRAID
