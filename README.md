@@ -20,38 +20,39 @@ The script anticipates a directory arrangement where each service resides within
     ├── CustomApp/
     │   ├── docker-compose.yaml
     │   └── Dockerfile
-    ├── docker-update.py
-    └── .docker-update (optional)
+    ├── update.py
+    └── .docker-update.ini (optional)
 ```
 
 
 ## Usage
 ```
-python3 docker_update_script.py [-h] [-c CONTAINERS] [-e EXCLUDE] [-f] [-t TIMEOUT]
+python3 update.py [-h] [-c CONTAINERS] [-e EXCLUDE] [-f] [-i] [-t TIMEOUT]
 ```
 
 * -c, --containers: Specify a list of containers to update (e.g., "couchpotato, medusa").
 * -e, --exclude: Specify a list of containers to exclude from the update (e.g., "sonarr, radarr").
 * -f, --force: Force re-creating container(s).
+* -i, --immediate: Update, restart and prune immediately per container to save space.
 * -t, --timeout: Specify the timeout for stopping containers (default: 60).
 
 
 ## Examples
 Update specific containers, restarting only if necessary:
 ```
-python3 docker_update_script.py -c "sonarr, radarr"
+python3 update.py -c "sonarr, radarr"
 ```
 Exclude containers from the update:
 ```
-python3 docker_update_script.py -e "traefik, ddclient"
+python3 update.py -e "traefik, ddclient"
 ```
 Force re-creation of containers:
 ```
-python3 docker_update_script.py -f
+python3 update.py -f
 ```
 Set a custom timeout for stopping containers (e.g., 30 seconds):
 ```
-python3 docker_update_script.py -t 30
+python3 update.py -t 30
 ```
 
 
@@ -102,7 +103,7 @@ fi
 
 source /root/.bash_profile
 ```
-Make sure to modify the path to the top-level Docker container (/mnt/user/docker/) according to your setup. This alias simplifies the update process for all Docker containers on your unRAID machine. Now, you can utilize `docker-update` in place of `python3 docker_update_script.py`.
+Make sure to modify the path to the top-level Docker container (/mnt/user/docker/) according to your setup. This alias simplifies the update process for all Docker containers on your unRAID machine. Now, you can utilize `docker-update` in place of `python3 update.py`.
 
 
 ## Requirements
